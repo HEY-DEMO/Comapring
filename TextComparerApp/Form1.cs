@@ -1,5 +1,20 @@
 using System;
 using System.Drawing;
+using System.IO;
+using System.Linq;
+using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
+using System.Text;
+using System.Threading.Tasks;
+using System.Windows.Forms;
+using DiffPlex;
+using DiffPlex.DiffBuilder;
+using DiffPlex.DiffBuilder.Model;
+using DiffPlex.Model;
+using DocumentFormat.OpenXml.Packaging;
+using UglyToad.PdfPig;
+using System.Drawing;
+using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
@@ -28,6 +43,8 @@ namespace TextComparerApp
         private Button btnCompare = null!;
         private Button btnClear = null!;
         private CheckBox chkIgnoreCase = null!;
+        private CheckBox chkStrictWhitespace = null!;
+        private CheckBox chkPpwkCompare = null!;
         private Label lblStatus = null!;
         private System.Windows.Forms.Timer compareTimer = null!;
 
@@ -53,7 +70,7 @@ namespace TextComparerApp
                 Padding = new Padding(10)
             };
             mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 40f)); // Inputs
-            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40f)); // Button
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 80f)); // Button panel
             mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 60f)); // Output
             mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30f)); // Status text
 
@@ -73,7 +90,13 @@ namespace TextComparerApp
             };
             txtOriginal.TextChanged += (s, e) => RestartTimer();
             var grpOriginal = new GroupBox { Dock = DockStyle.Fill, Text = "Original Text" };
+            var pnlOriginalBtn = new Panel { Dock = DockStyle.Top, Height = 30, Padding = new Padding(2) };
+            var btnLoadOriginal = new Button { Text = "Load File...", Dock = DockStyle.Left, Width = 100 };
+            btnLoadOriginal.Click += (s, e) => LoadFileInto(txtOriginal);
+            pnlOriginalBtn.Controls.Add(btnLoadOriginal);
             grpOriginal.Controls.Add(txtOriginal);
+            grpOriginal.Controls.Add(pnlOriginalBtn);
+            txtOriginal.BringToFront();
 
             txtModified = new TextBox
             {
@@ -84,7 +107,13 @@ namespace TextComparerApp
             };
             txtModified.TextChanged += (s, e) => RestartTimer();
             var grpModified = new GroupBox { Dock = DockStyle.Fill, Text = "Modified Text" };
+            var pnlModifiedBtn = new Panel { Dock = DockStyle.Top, Height = 30, Padding = new Padding(2) };
+            var btnLoadModified = new Button { Text = "Load File...", Dock = DockStyle.Left, Width = 100 };
+            btnLoadModified.Click += (s, e) => LoadFileInto(txtModified);
+            pnlModifiedBtn.Controls.Add(btnLoadModified);
             grpModified.Controls.Add(txtModified);
+            grpModified.Controls.Add(pnlModifiedBtn);
+            txtModified.BringToFront();
 
             splitContainerInputs.Panel1.Controls.Add(grpOriginal);
             splitContainerInputs.Panel2.Controls.Add(grpModified);
@@ -116,6 +145,24 @@ namespace TextComparerApp
             };
             chkIgnoreCase.CheckedChanged += (s, e) => RestartTimer();
 
+            chkStrictWhitespace = new CheckBox
+            {
+                Text = "Compare Line Breaks / Blank Lines",
+                Font = new Font("Segoe UI", 10f),
+                AutoSize = true,
+                Margin = new Padding(15, 8, 0, 0)
+            };
+            chkStrictWhitespace.CheckedChanged += (s, e) => RestartTimer();
+
+            chkPpwkCompare = new CheckBox
+            {
+                Text = "PPWK Compare (Smart PDF mode)",
+                Font = new Font("Segoe UI", 10f),
+                AutoSize = true,
+                Margin = new Padding(15, 8, 0, 0)
+            };
+            chkPpwkCompare.CheckedChanged += (s, e) => RestartTimer();
+
             actionPanel = new FlowLayoutPanel
             {
                 Dock = DockStyle.Fill,
@@ -125,6 +172,8 @@ namespace TextComparerApp
             actionPanel.Controls.Add(btnCompare);
             actionPanel.Controls.Add(btnClear);
             actionPanel.Controls.Add(chkIgnoreCase);
+            actionPanel.Controls.Add(chkStrictWhitespace);
+            actionPanel.Controls.Add(chkPpwkCompare);
 
             compareTimer = new System.Windows.Forms.Timer { Interval = 500 };
             compareTimer.Tick += CompareTimer_Tick;
@@ -190,11 +239,47 @@ namespace TextComparerApp
             this.Controls.Add(mainLayout);
         }
 
-        private string Sanitize(string text)
+        private string Sanitize(string text, bool strictWhitespace)
         {
             if (string.IsNullOrEmpty(text))
                 return "";
+            if (strictWhitespace)
+                return text; // Preserve all newlines for granular tracking
             return text.Replace("\r", "").Replace("\n", "");
+        }
+
+        private void LoadFileInto(TextBox targetTextBox)
+        {
+            using var ofd = new OpenFileDialog();
+            ofd.Filter = "All Files (*.*)|*.*|Text Files (*.txt)|*.txt|C# Files (*.cs)|*.cs|XML (*.xml)|*.xml|YAML (*.yaml;*.yml)|*.yaml;*.yml|JSON (*.json)|*.json|Markdown (*.md)|*.md|Word Documents (*.docx)|*.docx|PDF Documents (*.pdf)|*.pdf";
+            if (ofd.ShowDialog() == DialogResult.OK)
+            {
+                try
+                {
+                    string ext = Path.GetExtension(ofd.FileName).ToLower();
+                    if (ext == ".pdf")
+                    {
+                        using var document = PdfDocument.Open(ofd.FileName);
+                        var sb = new StringBuilder();
+                        foreach (var page in document.GetPages())
+                            sb.Append(page.Text).Append("\n");
+                        targetTextBox.Text = sb.ToString();
+                    }
+                    else if (ext == ".docx")
+                    {
+                        using var wordDoc = WordprocessingDocument.Open(ofd.FileName, false);
+                        targetTextBox.Text = wordDoc.MainDocumentPart?.Document.Body?.InnerText ?? "";
+                    }
+                    else
+                    {
+                        targetTextBox.Text = File.ReadAllText(ofd.FileName);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Failed to load file: {ex.Message}", "File Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
         }
 
         private string[] Tokenize(string text)
@@ -227,9 +312,11 @@ namespace TextComparerApp
 
         private async void BtnCompare_Click(object? sender, EventArgs e)
         {
-            string original = Sanitize(txtOriginal.Text);
-            string modified = Sanitize(txtModified.Text);
+            bool strictWhitespace = chkStrictWhitespace.Checked;
+            string original = Sanitize(txtOriginal.Text, strictWhitespace);
+            string modified = Sanitize(txtModified.Text, strictWhitespace);
             bool ignoreCase = chkIgnoreCase.Checked;
+            bool ppwMode = chkPpwkCompare.Checked;
 
             btnCompare.Enabled = false;
             lblStatus.Text = "Processing...";
@@ -243,7 +330,7 @@ namespace TextComparerApp
                 // Only render if this is the latest requested comparison
                 if (pendingComparisons == 1)
                 {
-                    RenderDiff(diffResultBlock);
+                    RenderDiff(diffResultBlock, ppwMode);
                 }
             }
             catch (Exception ex)
@@ -266,11 +353,11 @@ namespace TextComparerApp
             return diff;
         }
 
-        private void RenderDiff(DiffResult diffResult)
+        private void RenderDiff(DiffResult diffResult, bool ppwMode)
         {
             if (this.InvokeRequired)
             {
-                this.Invoke(new Action(() => RenderDiff(diffResult)));
+                this.Invoke(new Action(() => RenderDiff(diffResult, ppwMode)));
                 return;
             }
 
@@ -304,6 +391,13 @@ namespace TextComparerApp
                 int bInsertCount = block.InsertCountB;
                 int aDeleteCount = block.DeleteCountA;
 
+                // Precisely detect any block that occurs entirely before the first match or after the last match
+                bool isBeforeFirstMatch = ppwMode && block == diffBlocks[0] && block.DeleteStartA == 0 && block.InsertStartB == 0;
+                bool isAfterLastMatch = ppwMode && block == diffBlocks[diffBlocks.Count - 1] && (block.DeleteStartA + block.DeleteCountA) == oldPieces.Count && (block.InsertStartB + block.InsertCountB) == newPieces.Count;
+
+                // Detect massive inline insertions that bloat the UI in paperwork mode
+                bool isMassiveInline = ppwMode && !isBeforeFirstMatch && !isAfterLastMatch && bInsertCount > 300 && aDeleteCount < 10;
+
                 totalDeletions += aDeleteCount;
                 totalInsertions += bInsertCount;
 
@@ -325,7 +419,20 @@ namespace TextComparerApp
                     insText = insertSb.ToString();
                 }
 
-                if (aDeleteCount > 0 && bInsertCount > 0)
+                if (isBeforeFirstMatch)
+                {
+                    AppendTextWithStyle($"\n[... Prefix Content Hidden ...]\n\n", "Equal");
+                }
+                else if (isAfterLastMatch)
+                {
+                    AppendTextWithStyle($"\n\n[... Suffix Content Hidden ...]\n", "Equal");
+                }
+                else if (isMassiveInline)
+                {
+                    if (aDeleteCount > 0) AppendTextWithStyle(delText, "Delete");
+                    AppendTextWithStyle($"\n\n[... Target Inline Section Hidden ({bInsertCount} words) ...]\n\n", "Equal");
+                }
+                else if (aDeleteCount > 0 && bInsertCount > 0)
                 {
                     // Evaluate Nested Character-Level Diff
                     var charDiffer = new Differ();
